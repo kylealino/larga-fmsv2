@@ -689,7 +689,46 @@ echo view('templates/myheader.php');
     .erp-panel-fields strong { font-size: 12px; color: var(--gray-800); font-weight: 600; }
     .erp-quote { background: #ffffff; border-radius: 6px; }
     .erp-quote th, .erp-quote td { padding: 6px 10px !important; font-size: 11px !important; }
+
+    /* Route planning map (Leaflet + OpenStreetMap) */
+    .route-summary { display: flex; gap: 20px; }
+    .route-summary-item { display: flex; flex-direction: column; align-items: flex-end; }
+    .route-summary-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--gray-500); }
+    .route-summary-value { font-size: 15px; font-weight: 700; color: var(--gray-800); }
+    .route-map-wrap { position: relative; border: 1px solid var(--gray-200); border-radius: 8px; overflow: hidden; }
+    #routeMap { height: 420px; width: 100%; z-index: 0; }
+    #routeMap.picking { cursor: crosshair; }
+    /* OSM credit is required by its license — kept, but small and faint */
+    #routeMap .leaflet-control-attribution { background: rgba(255,255,255,0.5); font-size: 9px; padding: 0 4px; }
+    #routeMap .leaflet-control-attribution a { color: #94a3b8; text-decoration: none; }
+    .route-map-status { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 500; background: rgba(17,24,39,0.85); color: #ffffff; font-size: 12px; padding: 5px 12px; border-radius: 999px; pointer-events: none; }
+    .wp-pin { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid #ffffff; box-shadow: 0 2px 6px rgba(0,0,0,0.35); }
+    .wp-pin span { transform: rotate(45deg); color: #ffffff; font-weight: 700; font-size: 12px; }
+    .wp-pin.pending { background: #111827; }
+    .wp-pin.pending span { font-size: 15px; }
+    .route-popup-title { font-weight: 700; font-size: 13px; }
+    .route-popup-meta { font-size: 11px; color: #6b7280; }
+    .wp-coord-badge { font-size: 10px; color: var(--success); }
+    .wp-coord-badge.none { color: var(--gray-400); }
+    /* Place autocomplete dropdown (Photon / OpenStreetMap) */
+    .place-ac { position: relative; }
+    .place-ac-list { position: absolute; z-index: 1060; left: 0; top: 100%; margin-top: 4px; min-width: 100%; width: 420px; max-width: 90vw; background: #ffffff; border: 1px solid var(--gray-200); border-radius: 8px; box-shadow: 0 8px 24px rgba(15,23,42,0.18); overflow: hidden; }
+    .place-ac-item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--gray-100); }
+    .place-ac-item:last-of-type { border-bottom: none; }
+    .place-ac-item.active, .place-ac-item:hover { background: var(--gray-50); }
+    .place-ac-item > i { color: var(--gray-400); font-size: 15px; margin-top: 1px; }
+    .place-ac-main { font-size: 13px; font-weight: 600; color: var(--gray-800); line-height: 1.3; }
+    .place-ac-main mark { background: none; padding: 0; color: var(--primary); }
+    .place-ac-sub { font-size: 11px; color: var(--gray-500); line-height: 1.3; }
+    .place-ac-empty { padding: 10px 12px; font-size: 12px; color: var(--gray-500); }
+    .place-ac-foot { padding: 4px 12px; font-size: 10px; color: var(--gray-400); text-align: right; background: var(--gray-50); }
+    @media (max-width: 768px) {
+        .route-summary { gap: 12px; }
+        #routeMap { height: 300px; }
+    }
 </style>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 
 <div class="me-trp-msg"></div>
 <input type="hidden" id="__siteurl" data-mesiteurl="<?=site_url();?>" />
@@ -1421,6 +1460,20 @@ echo view('templates/myheader.php');
                         <div class="fw-semibold" id="route_trip_code" style="font-size:15px;"></div>
                         <div class="text-muted" style="font-size:12px;">Plan the route waypoints for this trip</div>
                     </div>
+                    <div class="route-summary ms-auto" id="routeSummary">
+                        <div class="route-summary-item">
+                            <span class="route-summary-label">Distance</span>
+                            <span class="route-summary-value" id="route_distance">—</span>
+                        </div>
+                        <div class="route-summary-item">
+                            <span class="route-summary-label">Est. Drive Time</span>
+                            <span class="route-summary-value" id="route_duration">—</span>
+                        </div>
+                        <div class="route-summary-item">
+                            <span class="route-summary-label">Plotted Stops</span>
+                            <span class="route-summary-value" id="route_plotted">—</span>
+                        </div>
+                    </div>
                 </div>
                 
                 <div class="row g-2 mb-3 p-3" style="background:#ffffff;border:1px solid var(--gray-200);border-radius:8px;">
@@ -1443,11 +1496,20 @@ echo view('templates/myheader.php');
                     </div>
                     <div class="col-md-3">
                         <label class="form-label" style="font-size:9px;color:var(--gray-500);">Waypoint Name *</label>
-                        <input type="text" id="wp_name" class="form-control" placeholder="e.g., Manila Port">
+                        <div class="place-ac">
+                            <input type="text" id="wp_name" class="form-control" placeholder="Search a place, e.g., Manila Port" autocomplete="off">
+                        </div>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label" style="font-size:9px;color:var(--gray-500);">Address</label>
-                        <input type="text" id="wp_address" class="form-control" placeholder="Address">
+                        <div class="place-ac">
+                            <div class="input-group">
+                                <input type="text" id="wp_address" class="form-control" placeholder="Search address" autocomplete="off">
+                                <button class="btn btn-outline-secondary" type="button" id="wpLocateBtn" onclick="__Trips.__geocodeAddress()" title="Find address on map">
+                                    <i class="bi bi-geo-alt"></i>
+                                </button>
+                            </div>
+                        </div>
                     </div>
                     <div class="col-md-2">
                         <label class="form-label" style="font-size:9px;color:var(--gray-500);">&nbsp;</label>
@@ -1470,8 +1532,29 @@ echo view('templates/myheader.php');
                                 <label class="form-label" style="font-size:9px;color:var(--gray-500);">Remarks</label>
                                 <input type="text" id="wp_remarks" class="form-control" placeholder="Additional notes">
                             </div>
+                            <div class="col-md-3">
+                                <label class="form-label" style="font-size:9px;color:var(--gray-500);">Latitude</label>
+                                <input type="number" step="any" id="wp_lat" class="form-control" placeholder="Click map or search address"
+                                    onchange="__Trips.__syncPendingMarker()">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label" style="font-size:9px;color:var(--gray-500);">Longitude</label>
+                                <input type="number" step="any" id="wp_lng" class="form-control" placeholder="Click map or search address"
+                                    onchange="__Trips.__syncPendingMarker()">
+                            </div>
+                            <div class="col-md-6 d-flex align-items-end">
+                                <div class="text-muted" style="font-size:11px;">
+                                    <i class="bi bi-info-circle me-1"></i>
+                                    Search the address or click the map to pin this waypoint. Drag the pin to fine-tune.
+                                </div>
+                            </div>
                         </div>
                     </div>
+                </div>
+
+                <div class="route-map-wrap mb-3">
+                    <div id="routeMap"></div>
+                    <div class="route-map-status" id="routeMapStatus" style="display:none;"></div>
                 </div>
 
                 <div class="table-responsive">
@@ -1540,6 +1623,8 @@ echo view('templates/myheader.php');
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 var tripTable;
 

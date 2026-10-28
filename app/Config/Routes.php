@@ -12,6 +12,7 @@ $routes->get('myclientlogin', 'ClientHome::index');
 $routes->add('mylogin-auth', 'MyLogIn::auth');
 $routes->add('mylogout', 'MyLogIn::logout');
 $routes->get('myadmindashboard', 'MyAdminDashboard::index',['filter' => 'myauthuser']);
+$routes->get('myadmindashboard/live-fleet', 'MyAdminDashboard::liveFleet',['filter' => 'myauthuser']);
 $routes->add('myclientlogout', 'MyClientDashboard::logout');
 
 // =============================================

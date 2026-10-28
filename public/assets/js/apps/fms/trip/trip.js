@@ -1589,12 +1589,428 @@ function __Trips() {
     };
 
     // ==============================
+    // ROUTE MAP (Leaflet + OpenStreetMap)
+    // Tiles: OpenStreetMap. Address search: Nominatim. Road routing: OSRM.
+    // A waypoint without coordinates is listed but not plotted.
+    // ==============================
+    var routeMap = null;
+    var routeLayer = null;
+    var pendingMarker = null;
+    var routeRequestSeq = 0;
+    var ROUTE_DEFAULT_CENTER = [14.5995, 120.9842]; // Metro Manila
+    var ROUTE_DEFAULT_ZOOM = 11;
+    var ROUTE_TYPE_COLORS = {
+        'GARAGE': '#6b7280',
+        'EMPTY_CONTAINER_PICKUP': '#f59e0b',
+        'CLIENT_WAREHOUSE': '#8b5cf6',
+        'DELIVERY_DESTINATION': '#ef4444',
+        'PORT_TERMINAL': '#0ea5e9',
+        'RETURN_POINT': '#10b981',
+        'PICKUP_LOCATION': '#2563eb',
+        'OTHER': '#64748b'
+    };
+    var ROUTE_TYPE_LABELS = {
+        'GARAGE': 'Garage',
+        'EMPTY_CONTAINER_PICKUP': 'Empty Container Pickup',
+        'CLIENT_WAREHOUSE': 'Client Warehouse',
+        'DELIVERY_DESTINATION': 'Delivery Destination',
+        'PORT_TERMINAL': 'Port / Terminal',
+        'RETURN_POINT': 'Return Point',
+        'PICKUP_LOCATION': 'Pickup Location',
+        'OTHER': 'Other'
+    };
+
+    function routeEsc(value) {
+        return $('<div>').text(value == null ? '' : String(value)).html();
+    }
+
+    function hasCoords(row) {
+        return row.latitude !== null && row.latitude !== '' && row.longitude !== null && row.longitude !== ''
+            && !isNaN(parseFloat(row.latitude)) && !isNaN(parseFloat(row.longitude));
+    }
+
+    function pinIcon(label, color, extraClass) {
+        return L.divIcon({
+            className: '',
+            html: '<div class="wp-pin ' + (extraClass || '') + '" style="' + (color ? 'background:' + color + ';' : '') + '"><span>' + label + '</span></div>',
+            iconSize: [30, 30],
+            iconAnchor: [15, 30],
+            popupAnchor: [0, -30]
+        });
+    }
+
+    function setMapStatus(text) {
+        if(text) {
+            $('#routeMapStatus').text(text).show();
+        } else {
+            $('#routeMapStatus').hide();
+        }
+    }
+
+    function formatDistance(meters) {
+        return meters >= 1000 ? (meters / 1000).toFixed(1) + ' km' : Math.round(meters) + ' m';
+    }
+
+    function formatDuration(seconds) {
+        var mins = Math.round(seconds / 60);
+        if(mins < 60) return mins + ' min';
+        var h = Math.floor(mins / 60), m = mins % 60;
+        return h + ' hr' + (m ? ' ' + m + ' min' : '');
+    }
+
+    this.__initRouteMap = function() {
+        if(routeMap) return;
+        if(typeof L === 'undefined') {
+            setMapStatus('Map library failed to load — check your internet connection.');
+            return;
+        }
+
+        routeMap = L.map('routeMap').setView(ROUTE_DEFAULT_CENTER, ROUTE_DEFAULT_ZOOM);
+        routeMap.attributionControl.setPrefix(false); // OSM credit below must stay (ODbL / tile usage policy)
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '<a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap</a>'
+        }).addTo(routeMap);
+        routeLayer = L.layerGroup().addTo(routeMap);
+
+        // Clicking the map pins the waypoint currently being added/edited
+        routeMap.on('click', function(e) {
+            __Trips.__setPendingLocation(e.latlng.lat, e.latlng.lng, false);
+            if(!$('#wp_address').val().trim()) {
+                __Trips.__reverseGeocode(e.latlng.lat, e.latlng.lng);
+            }
+        });
+    };
+
+    this.__setPendingLocation = function(lat, lng, pan) {
+        lat = parseFloat(lat);
+        lng = parseFloat(lng);
+        if(isNaN(lat) || isNaN(lng) || !routeMap) return;
+
+        $('#wp_lat').val(lat.toFixed(7));
+        $('#wp_lng').val(lng.toFixed(7));
+
+        if(!pendingMarker) {
+            pendingMarker = L.marker([lat, lng], {
+                draggable: true,
+                zIndexOffset: 1000,
+                icon: pinIcon('<i class="bi bi-plus"></i>', null, 'pending')
+            }).addTo(routeMap);
+            pendingMarker.bindTooltip('New / edited waypoint — drag to adjust', { direction: 'top', offset: [0, -30] });
+            pendingMarker.on('dragend', function() {
+                var p = pendingMarker.getLatLng();
+                $('#wp_lat').val(p.lat.toFixed(7));
+                $('#wp_lng').val(p.lng.toFixed(7));
+            });
+        } else {
+            pendingMarker.setLatLng([lat, lng]);
+        }
+
+        if(pan) {
+            routeMap.setView([lat, lng], Math.max(routeMap.getZoom(), 15));
+        }
+    };
+
+    this.__syncPendingMarker = function() {
+        var lat = $('#wp_lat').val(), lng = $('#wp_lng').val();
+        if(lat !== '' && lng !== '') {
+            this.__setPendingLocation(lat, lng, true);
+        } else {
+            this.__clearPendingMarker();
+        }
+    };
+
+    this.__clearPendingMarker = function() {
+        if(pendingMarker && routeMap) {
+            routeMap.removeLayer(pendingMarker);
+        }
+        pendingMarker = null;
+        $('#wp_lat').val('');
+        $('#wp_lng').val('');
+    };
+
+    // Address → coordinates (Nominatim). Falls back to the waypoint name when the address is blank.
+    this.__geocodeAddress = function() {
+        var query = $('#wp_address').val().trim() || $('#wp_name').val().trim();
+        if(!query) {
+            toastr.warning('Enter an address or waypoint name to search', 'Nothing to search');
+            $('#wp_address').focus();
+            return;
+        }
+
+        var btn = $('#wpLocateBtn');
+        btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm"></span>');
+
+        var url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=ph&q=' + encodeURIComponent(query);
+        fetch(url, { headers: { 'Accept-Language': 'en' } })
+            .then(function(res) { return res.json(); })
+            .then(function(results) {
+                if(results && results.length) {
+                    __Trips.__setPendingLocation(results[0].lat, results[0].lon, true);
+                    if(!$('#wp_address').val().trim()) {
+                        $('#wp_address').val(results[0].display_name);
+                    }
+                    toastr.success(results[0].display_name, 'Location found');
+                } else {
+                    toastr.warning('No match for "' + query + '". Try a broader address, or click the map to pin it.', 'Not found');
+                }
+            })
+            .catch(function() {
+                toastr.error('Address search is unavailable right now. Click the map to pin the location.');
+            })
+            .finally(function() {
+                btn.prop('disabled', false).html('<i class="bi bi-geo-alt"></i>');
+            });
+    };
+
+    // Coordinates → address (Nominatim), used to prefill a blank address after a map click.
+    this.__reverseGeocode = function(lat, lng) {
+        var url = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=' + lat + '&lon=' + lng;
+        fetch(url, { headers: { 'Accept-Language': 'en' } })
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                if(data && data.display_name && !$('#wp_address').val().trim()) {
+                    $('#wp_address').val(data.display_name);
+                }
+            })
+            .catch(function() { /* address stays blank; coordinates are already set */ });
+    };
+
+    // ==============================
+    // PLACE AUTOCOMPLETE (Photon — OpenStreetMap search built for type-ahead)
+    // Suggestions are limited to the Philippines and biased toward the current map view.
+    // ==============================
+    var PLACE_AC_BBOX = '116.9,4.5,126.7,21.2'; // Philippines
+    var PLACE_AC_MIN_CHARS = 3;
+    var PLACE_AC_DEBOUNCE_MS = 300;
+
+    function toPlace(feature) {
+        var p = feature.properties || {};
+        var street = p.street ? ((p.housenumber ? p.housenumber + ' ' : '') + p.street) : '';
+        var name = p.name || street || p.city || p.state || '';
+        var parts = [];
+        $.each([street, p.locality, p.district, p.city, p.state, p.postcode], function(_, part) {
+            if(part && part !== name && parts.indexOf(part) === -1) parts.push(part);
+        });
+        var sub = parts.join(', ');
+        return {
+            name: name,
+            sub: sub,
+            full: sub ? name + ', ' + sub : name,
+            lat: feature.geometry.coordinates[1],
+            lng: feature.geometry.coordinates[0]
+        };
+    }
+
+    function highlightMatch(text, query) {
+        var safe = routeEsc(text);
+        var q = routeEsc(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return q ? safe.replace(new RegExp('(' + q + ')', 'i'), '<mark>$1</mark>') : safe;
+    }
+
+    function attachPlaceAutocomplete($input, onSelect, onEnterWithoutPick) {
+        var $list = $('<div class="place-ac-list"></div>').hide().appendTo($input.closest('.place-ac'));
+        var items = [], active = -1, timer = null, seq = 0;
+
+        function close() {
+            seq++; // drop any in-flight response
+            $list.hide().empty();
+            items = [];
+            active = -1;
+        }
+
+        function setActive(i) {
+            active = i;
+            $list.find('.place-ac-item').removeClass('active').eq(i).addClass('active');
+        }
+
+        function pick(i) {
+            var place = items[i];
+            close();
+            if(place) onSelect(place);
+        }
+
+        function render(query) {
+            if(!items.length) {
+                $list.html('<div class="place-ac-empty"><i class="bi bi-search me-1"></i>No places found for "' + routeEsc(query) + '" — you can still type it and click the map to pin it.</div>').show();
+                return;
+            }
+            var html = '';
+            $.each(items, function(i, place) {
+                html += '<div class="place-ac-item" data-idx="' + i + '">'
+                    + '<i class="bi bi-geo-alt-fill"></i>'
+                    + '<div><div class="place-ac-main">' + highlightMatch(place.name, query) + '</div>'
+                    + (place.sub ? '<div class="place-ac-sub">' + routeEsc(place.sub) + '</div>' : '')
+                    + '</div></div>';
+            });
+            html += '<div class="place-ac-foot">Search by OpenStreetMap</div>';
+            $list.html(html).show();
+            active = -1;
+        }
+
+        function search(query) {
+            var mySeq = ++seq;
+            var center = routeMap ? routeMap.getCenter() : { lat: ROUTE_DEFAULT_CENTER[0], lng: ROUTE_DEFAULT_CENTER[1] };
+            var url = 'https://photon.komoot.io/api/?limit=6&lang=en'
+                + '&bbox=' + PLACE_AC_BBOX
+                + '&lat=' + center.lat.toFixed(4) + '&lon=' + center.lng.toFixed(4)
+                + '&q=' + encodeURIComponent(query);
+
+            $list.html('<div class="place-ac-empty"><span class="spinner-border spinner-border-sm me-2"></span>Searching…</div>').show();
+            fetch(url)
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    if(mySeq !== seq) return; // a newer keystroke superseded this search
+                    var seen = {};
+                    items = [];
+                    $.each((data && data.features) || [], function(_, f) {
+                        var place = toPlace(f);
+                        var key = place.full.toLowerCase();
+                        if(place.name && !seen[key]) { seen[key] = true; items.push(place); }
+                    });
+                    render(query);
+                })
+                .catch(function() {
+                    if(mySeq !== seq) return;
+                    items = [];
+                    $list.html('<div class="place-ac-empty text-danger"><i class="bi bi-wifi-off me-1"></i>Place search is unavailable right now — click the map to pin the location.</div>').show();
+                });
+        }
+
+        $input.on('input', function() {
+            clearTimeout(timer);
+            var query = $.trim(this.value);
+            if(query.length < PLACE_AC_MIN_CHARS) { close(); return; }
+            timer = setTimeout(function() { search(query); }, PLACE_AC_DEBOUNCE_MS);
+        });
+
+        $input.on('keydown', function(e) {
+            var open = $list.is(':visible') && items.length;
+            if(e.key === 'ArrowDown' && open) {
+                e.preventDefault(); setActive((active + 1) % items.length);
+            } else if(e.key === 'ArrowUp' && open) {
+                e.preventDefault(); setActive(active <= 0 ? items.length - 1 : active - 1);
+            } else if(e.key === 'Enter') {
+                e.preventDefault();
+                if(open && active >= 0) {
+                    pick(active);
+                } else {
+                    clearTimeout(timer);
+                    close();
+                    if(onEnterWithoutPick) onEnterWithoutPick();
+                }
+            } else if(e.key === 'Escape' && $list.is(':visible')) {
+                e.preventDefault(); e.stopPropagation(); // close the dropdown, not the modal
+                close();
+            }
+        });
+
+        // mousedown (not click) so the pick happens before the input's blur closes the list
+        $list.on('mousedown', '.place-ac-item', function(e) {
+            e.preventDefault();
+            pick(parseInt($(this).attr('data-idx'), 10));
+        });
+        $list.on('mouseenter', '.place-ac-item', function() {
+            setActive(parseInt($(this).attr('data-idx'), 10));
+        });
+        $input.on('blur', function() {
+            clearTimeout(timer);
+            setTimeout(close, 150);
+        });
+    }
+
+    this.__initPlaceAutocomplete = function() {
+        // Picking from Waypoint Name: the place name becomes the waypoint name, its address fills Address
+        attachPlaceAutocomplete($('#wp_name'), function(place) {
+            $('#wp_name').val(place.name);
+            $('#wp_address').val(place.sub || place.full);
+            __Trips.__setPendingLocation(place.lat, place.lng, true);
+        });
+
+        // Picking from Address: full address, and the place name if the waypoint is still unnamed
+        attachPlaceAutocomplete($('#wp_address'), function(place) {
+            $('#wp_address').val(place.full);
+            if(!$('#wp_name').val().trim()) $('#wp_name').val(place.name);
+            __Trips.__setPendingLocation(place.lat, place.lng, true);
+        }, function() {
+            __Trips.__geocodeAddress();
+        });
+    };
+
+    // Plot saved waypoints in sequence and draw the driving route between them.
+    this.__renderRoute = function(waypoints) {
+        if(!routeMap) return;
+        routeLayer.clearLayers();
+
+        var plotted = (waypoints || []).filter(hasCoords);
+        var total = (waypoints || []).length;
+        $('#route_plotted').text(total ? plotted.length + ' / ' + total : '—');
+        $('#route_distance').text('—');
+        $('#route_duration').text('—');
+        setMapStatus(total && !plotted.length ? 'No waypoints are pinned yet — search an address or click the map.' : '');
+
+        var latlngs = [];
+        $.each(plotted, function(i, row) {
+            var ll = [parseFloat(row.latitude), parseFloat(row.longitude)];
+            latlngs.push(ll);
+            var color = ROUTE_TYPE_COLORS[row.waypoint_type] || ROUTE_TYPE_COLORS.OTHER;
+            var popup = '<div class="route-popup-title">#' + routeEsc(row.sequence) + ' ' + routeEsc(row.waypoint_name) + '</div>'
+                + '<div class="route-popup-meta">' + routeEsc(ROUTE_TYPE_LABELS[row.waypoint_type] || row.waypoint_type) + '</div>'
+                + (row.address ? '<div class="route-popup-meta">' + routeEsc(row.address) + '</div>' : '')
+                + (row.expected_arrival ? '<div class="route-popup-meta">ETA: ' + routeEsc(row.expected_arrival) + '</div>' : '');
+            L.marker(ll, { icon: pinIcon(routeEsc(row.sequence), color) })
+                .bindPopup(popup)
+                .addTo(routeLayer);
+        });
+
+        if(latlngs.length === 1) {
+            routeMap.setView(latlngs[0], 14);
+        } else if(latlngs.length > 1) {
+            routeMap.fitBounds(L.latLngBounds(latlngs).pad(0.15));
+            this.__drawRoadRoute(latlngs);
+        } else {
+            routeMap.setView(ROUTE_DEFAULT_CENTER, ROUTE_DEFAULT_ZOOM);
+        }
+    };
+
+    this.__drawRoadRoute = function(latlngs) {
+        var requestId = ++routeRequestSeq;
+        var coords = latlngs.map(function(ll) { return ll[1] + ',' + ll[0]; }).join(';');
+        var url = 'https://router.project-osrm.org/route/v1/driving/' + coords + '?overview=full&geometries=geojson';
+
+        setMapStatus('Calculating road route…');
+        fetch(url)
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                if(requestId !== routeRequestSeq) return; // a newer render superseded this one
+                if(!data || data.code !== 'Ok' || !data.routes || !data.routes.length) throw new Error('no route');
+
+                var route = data.routes[0];
+                var path = route.geometry.coordinates.map(function(c) { return [c[1], c[0]]; });
+                // Google-Maps-style line: dark casing under a bright blue stroke
+                L.polyline(path, { color: '#1a56c4', weight: 9, opacity: 0.9 }).addTo(routeLayer);
+                L.polyline(path, { color: '#4f8ff7', weight: 6, opacity: 1 }).addTo(routeLayer);
+                routeMap.fitBounds(L.latLngBounds(path).pad(0.1));
+
+                $('#route_distance').text(formatDistance(route.distance));
+                $('#route_duration').text(formatDuration(route.duration));
+                setMapStatus('');
+            })
+            .catch(function() {
+                if(requestId !== routeRequestSeq) return;
+                // Routing service unavailable: fall back to straight lines so the order is still visible
+                L.polyline(latlngs, { color: '#4f8ff7', weight: 4, dashArray: '8 8' }).addTo(routeLayer);
+                setMapStatus('Road routing unavailable — showing straight-line path.');
+            });
+    };
+
+    // ==============================
     // VIEW ROUTE
     // ==============================
     this.__viewRoute = function(trip_id, trip_code) {
         $('#route_trip_id').val(trip_id);
         $('#route_trip_code').text(trip_code);
-        
+
         $('#wp_sequence').val('1');
         $('#wp_type').val('GARAGE');
         $('#wp_name').val('');
@@ -1603,15 +2019,24 @@ function __Trips() {
         $('#wp_expected_departure').val('');
         $('#wp_remarks').val('');
         $('#route_editing_id').val('');
-        
+        this.__clearPendingMarker();
+        if(routeLayer) routeLayer.clearLayers();
+        $('#route_distance, #route_duration, #route_plotted').text('—');
+
         var btn = $('#wpActionBtn');
         btn.html('<i class="bi bi-plus"></i> Add');
         btn.attr('onclick', '__Trips.__saveWaypoint()');
         btn.removeClass('btn-warning').addClass('btn-primary');
-        
-        this.__loadWaypoints(trip_id);
-        
-        var modal = new bootstrap.Modal(document.getElementById('routeModal'));
+
+        var modalEl = document.getElementById('routeModal');
+        // Leaflet needs the container visible to size itself, so build/refresh the map after the modal opens
+        modalEl.addEventListener('shown.bs.modal', function() {
+            __Trips.__initRouteMap();
+            if(routeMap) routeMap.invalidateSize();
+            __Trips.__loadWaypoints(trip_id);
+        }, { once: true });
+
+        var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
         modal.show();
     };
 
@@ -1645,7 +2070,11 @@ function __Trips() {
                         
                         html += '<tr>';
                         html += '<td>' + row.sequence + '</td>';
-                        html += '<td><strong>' + (row.waypoint_name || '—') + '</strong></td>';
+                        html += '<td><strong>' + (row.waypoint_name || '—') + '</strong>';
+                        html += hasCoords(row)
+                            ? '<div class="wp-coord-badge"><i class="bi bi-geo-alt-fill"></i> Pinned on map</div>'
+                            : '<div class="wp-coord-badge none"><i class="bi bi-geo-alt"></i> Not pinned</div>';
+                        html += '</td>';
                         html += '<td>' + typeDisplay + '</td>';
                         html += '<td>' + (row.address || '—') + '</td>';
                         html += '<td>' + (row.expected_arrival || '—') + '</td>';
@@ -1666,6 +2095,7 @@ function __Trips() {
                     html = '<tr><td colspan="7" class="text-center text-muted">No waypoints found</td></tr>';
                 }
                 $('#waypointsBody').html(html);
+                __Trips.__renderRoute(data || []);
             },
             error: function(xhr, status, error) {
                 toastr.error("Error loading waypoints: " + error);
@@ -1711,6 +2141,8 @@ function __Trips() {
             waypoint_type: waypoint_type,
             waypoint_name: waypoint_name,
             address: address || '',
+            latitude: $('#wp_lat').val(),
+            longitude: $('#wp_lng').val(),
             expected_arrival: expected_arrival || null,
             expected_departure: expected_departure || null,
             remarks: remarks || '',
@@ -1742,7 +2174,8 @@ function __Trips() {
                     $('#wp_expected_departure').val('');
                     $('#wp_remarks').val('');
                     $('#route_editing_id').val('');
-                    
+                    __Trips.__clearPendingMarker();
+
                     btn.html('<i class="bi bi-plus"></i> Add');
                     btn.attr('onclick', '__Trips.__saveWaypoint()');
                     btn.removeClass('btn-warning').addClass('btn-primary');
@@ -1795,6 +2228,12 @@ function __Trips() {
                     
                     $('#wp_remarks').val(data.remarks || '');
                     $('#route_editing_id').val(waypoint_id);
+
+                    if(hasCoords(data)) {
+                        __Trips.__setPendingLocation(data.latitude, data.longitude, true);
+                    } else {
+                        __Trips.__clearPendingMarker();
+                    }
                     
                     var btn = $('#wpActionBtn');
                     btn.html('<i class="bi bi-pencil"></i> Update');
@@ -1830,6 +2269,7 @@ function __Trips() {
                         __Trips.__loadWaypoints(trip_id);
                         $('#route_editing_id').val('');
                         $('#wp_type').val('GARAGE');
+                        __Trips.__clearPendingMarker();
                         var btn = $('#wpActionBtn');
                         btn.html('<i class="bi bi-plus"></i> Add');
                         btn.attr('onclick', '__Trips.__saveWaypoint()');
@@ -1889,4 +2329,5 @@ var deleteName = '';
 
 $(document).ready(function() {
     console.log('Trips ready');
+    __Trips.__initPlaceAutocomplete();
 });

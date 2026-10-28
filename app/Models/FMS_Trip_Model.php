@@ -777,6 +777,8 @@ class FMS_Trip_Model extends Model
         $address = $this->request->getPost('address');
         $city = $this->request->getPost('city');
         $province = $this->request->getPost('province');
+        $latitude = $this->normalizeCoordinate($this->request->getPost('latitude'), 90);
+        $longitude = $this->normalizeCoordinate($this->request->getPost('longitude'), 180);
         $expected_arrival = $this->request->getPost('expected_arrival');
         $expected_departure = $this->request->getPost('expected_departure');
         $remarks = $this->request->getPost('remarks');
@@ -800,13 +802,13 @@ class FMS_Trip_Model extends Model
         $query = $this->db->query("
             INSERT INTO `tbl_trip_waypoints`(
                 `trip_id`, `sequence`, `waypoint_type`, `waypoint_name`,
-                `address`, `city`, `province`, `expected_arrival`,
-                `expected_departure`, `remarks`, `created_by`
+                `address`, `city`, `province`, `latitude`, `longitude`,
+                `expected_arrival`, `expected_departure`, `remarks`, `created_by`
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 $trip_id, $sequence, $waypoint_type, $waypoint_name,
-                $address, $city, $province, $expected_arrival,
+                $address, $city, $province, $latitude, $longitude, $expected_arrival,
                 $expected_departure, $remarks, $this->cuser
             ]
         );
@@ -828,6 +830,8 @@ class FMS_Trip_Model extends Model
         $address = $this->request->getPost('address');
         $city = $this->request->getPost('city');
         $province = $this->request->getPost('province');
+        $latitude = $this->normalizeCoordinate($this->request->getPost('latitude'), 90);
+        $longitude = $this->normalizeCoordinate($this->request->getPost('longitude'), 180);
         $expected_arrival = $this->request->getPost('expected_arrival');
         $expected_departure = $this->request->getPost('expected_departure');
         $remarks = $this->request->getPost('remarks');
@@ -853,6 +857,8 @@ class FMS_Trip_Model extends Model
                 `address` = ?,
                 `city` = ?,
                 `province` = ?,
+                `latitude` = ?,
+                `longitude` = ?,
                 `expected_arrival` = ?,
                 `expected_departure` = ?,
                 `remarks` = ?,
@@ -861,7 +867,7 @@ class FMS_Trip_Model extends Model
             ",
             [
                 $sequence, $waypoint_type, $waypoint_name,
-                $address, $city, $province, $expected_arrival,
+                $address, $city, $province, $latitude, $longitude, $expected_arrival,
                 $expected_departure, $remarks, $waypoint_id
             ]
         );
@@ -871,6 +877,16 @@ class FMS_Trip_Model extends Model
         } else {
             return ['status' => 'error', 'message' => 'An error occurred while updating waypoint.'];
         }
+    }
+
+    // Blank / non-numeric / out-of-range coordinates are stored as NULL (the waypoint just isn't plotted).
+    private function normalizeCoordinate($value, $limit)
+    {
+        if ($value === null || $value === '' || !is_numeric($value)) {
+            return NULL;
+        }
+        $value = round((float) $value, 7);
+        return abs($value) <= $limit ? $value : NULL;
     }
 
     public function deleteWaypoint()

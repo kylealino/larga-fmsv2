@@ -785,6 +785,130 @@ echo view('templates/myheader.php');
     }
 </style>
 
+<?php if (widget_visible('live_fleet_map')): ?>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+    /* ============================================ */
+    /* LIVE FLEET TRACKING — sized for easy reading (min ~13px text) */
+    /* ============================================ */
+    .lf-title { flex-wrap: wrap; font-size: 15px !important; }
+    .lf-live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--danger); letter-spacing: 0.5px; margin-left: 6px; }
+    .lf-live #lfUpdated { font-weight: 500; color: var(--text-muted); letter-spacing: 0; }
+    .lf-live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); animation: lfPulse 1.6s infinite; }
+    @keyframes lfPulse { 0% { box-shadow: 0 0 0 0 rgba(220,38,38,0.6); } 70% { box-shadow: 0 0 0 7px rgba(220,38,38,0); } 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); } }
+    .lf-title-actions { margin-left: auto; display: inline-flex; gap: 8px; }
+    .lf-btn { border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 8px; }
+    .lf-btn:hover { background: var(--accent-light); color: var(--accent); }
+    .lf-btn.primary { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+    .lf-btn.primary:hover { filter: brightness(1.1); color: #ffffff; }
+    .lf-title .lf-btn, .lf-title .badge-count, .lf-live #lfUpdated { text-transform: none; }
+    .lf-title .badge-count { font-size: 12px !important; }
+    .lf-btn .spin { display: inline-block; animation: lfSpin 0.8s linear infinite; }
+    @keyframes lfSpin { to { transform: rotate(360deg); } }
+    .lf-summary { font-size: 15px; color: var(--text-primary); background: var(--accent-light); border-radius: 8px; padding: 10px 14px; margin: 2px 0 10px; line-height: 1.5; }
+    .lf-summary > i { color: var(--accent); margin-right: 4px; }
+    .lf-sum-ok { color: #047857; font-weight: 600; white-space: nowrap; }
+    .lf-sum-late { color: var(--danger); font-weight: 700; white-space: nowrap; }
+    .lf-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+    .lf-chip { display: inline-flex; align-items: center; gap: 7px; border: 2px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); font-size: 14px; font-weight: 600; padding: 6px 14px; border-radius: 999px; cursor: pointer; }
+    .lf-chip i { font-size: 15px; }
+    .lf-chip b { font-weight: 800; color: var(--text-primary); font-size: 15px; }
+    .lf-chip:hover { border-color: var(--accent); }
+    .lf-chip.active { border-color: var(--accent); background: var(--accent); color: #ffffff; }
+    .lf-chip.active b, .lf-chip.active i { color: #ffffff !important; }
+    .lf-chip.empty { opacity: 0.45; }
+    .lf-panel { border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); display: flex; flex-direction: column; height: 700px; }
+    .lf-search { position: relative; padding: 10px; border-bottom: 1px solid var(--border-color); }
+    .lf-search i { position: absolute; left: 22px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 15px; }
+    .lf-search input { width: 100%; border: 1px solid var(--border-color); border-radius: 8px; padding: 9px 10px 9px 36px; font-size: 14px; outline: none; }
+    .lf-search input:focus { border-color: var(--accent); }
+    .lf-select-bar { display: flex; justify-content: space-between; padding: 8px 12px; font-size: 13px; color: var(--text-muted); border-bottom: 1px solid var(--border-color); }
+    .lf-select-bar a { color: var(--accent); text-decoration: none; font-weight: 700; }
+    .lf-list { overflow-y: auto; flex: 1; }
+    .lf-empty { padding: 28px 14px; text-align: center; font-size: 14px; color: var(--text-muted); }
+    .lf-item { display: flex; gap: 10px; padding: 12px 12px 12px 8px; border-bottom: 1px solid var(--border-color); border-left: 6px solid var(--truck, transparent); cursor: pointer; }
+    .lf-item:hover, .lf-item.hover { background: #f8fafc; }
+    .lf-item.focused { background: color-mix(in srgb, var(--truck) 10%, #ffffff); box-shadow: inset 0 0 0 2px var(--truck); }
+    .lf-item.unchecked .lf-item-body { opacity: 0.4; }
+    .lf-item input[type=checkbox] { width: 18px; height: 18px; margin-top: 6px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+    .lf-item-body { flex: 1; min-width: 0; }
+    .lf-item-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .lf-swatch { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; background: var(--truck); color: #ffffff; font-size: 15px; display: inline-flex; align-items: center; justify-content: center; }
+    .lf-plate { font-weight: 800; font-size: 16px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .lf-only { margin-left: auto; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+    .lf-only:hover { color: var(--accent); border-color: var(--accent); }
+    .lf-headline { font-size: 14px; font-weight: 700; color: var(--text-primary); line-height: 1.35; }
+    .lf-headline i { font-size: 15px; }
+    .lf-detail { font-size: 13px; color: var(--text-secondary); margin-top: 1px; }
+    .lf-detail.late { color: var(--danger); font-weight: 700; }
+    .lf-meta { font-size: 12.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+    .lf-prog-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .lf-prog-row span { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+    .lf-prog { flex: 1; height: 7px; background: var(--border-color); border-radius: 999px; overflow: hidden; }
+    .lf-prog > div { height: 100%; border-radius: 999px; }
+    .lf-map-wrap { position: relative; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
+    #lfMap { height: 700px; width: 100%; z-index: 0; background: #e8ecef; }
+    /* Softer gray base map so the colored truck routes stand out */
+    #lfMap .leaflet-tile-pane { filter: grayscale(0.9) contrast(0.85) brightness(1.06); }
+    /* OSM credit is required by its license — kept, but small and faint */
+    #lfMap .leaflet-control-attribution { background: rgba(255,255,255,0.5); font-size: 9px; padding: 0 4px; }
+    #lfMap .leaflet-control-attribution a { color: #94a3b8; text-decoration: none; }
+    #lfMap .leaflet-control-zoom a { width: 38px; height: 38px; line-height: 38px; font-size: 22px; }
+    .lf-map-status { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 500; background: rgba(17,24,39,0.88); color: #ffffff; font-size: 14px; padding: 7px 16px; border-radius: 999px; pointer-events: none; white-space: nowrap; }
+    .lf-legend { position: absolute; left: 10px; bottom: 10px; z-index: 500; background: rgba(255,255,255,0.96); padding: 8px 12px; border-radius: 8px; font-size: 13px; color: var(--text-secondary); box-shadow: 0 1px 6px rgba(0,0,0,0.18); max-width: calc(100% - 20px); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
+    .lf-legend b { color: var(--text-primary); }
+    .lf-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+    .lf-legend-line { display: inline-block; width: 28px; height: 0; border-top: 5px solid #475569; }
+    .lf-legend-line.dotted { border-top-style: dotted; }
+    .lf-focus-pill { position: absolute; right: 12px; top: 12px; z-index: 500; background: #ffffff; border-radius: 999px; padding: 6px 8px 6px 14px; font-size: 14px; color: var(--text-secondary); box-shadow: 0 2px 10px rgba(0,0,0,0.2); display: flex; align-items: center; gap: 8px; }
+    .lf-focus-pill b { color: var(--text-primary); }
+    .lf-focus-dot { width: 12px; height: 12px; border-radius: 50%; }
+    .lf-focus-pill button { border: none; background: var(--bg-primary); border-radius: 999px; padding: 4px 10px; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+    .lf-focus-pill button:hover { background: var(--danger-light); color: var(--danger); }
+    .lf-arrow { width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 17px; filter: drop-shadow(0 0 1px #ffffff) drop-shadow(0 0 1px #ffffff); }
+    .lf-flag { width: 28px; height: 28px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid #ffffff; box-shadow: 0 2px 5px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; }
+    .lf-flag i { transform: rotate(45deg); color: #ffffff; font-size: 13px; }
+    .lf-note { font-size: 13px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
+    /* Truck marker + label card */
+    .lf-unit { position: relative; width: 40px; height: 40px; }
+    .lf-truck { width: 40px; height: 40px; border-radius: 50%; border: 3px solid #ffffff; background: var(--truck); display: flex; align-items: center; justify-content: center; color: #ffffff; font-size: 19px; box-shadow: 0 2px 6px rgba(0,0,0,0.45); }
+    .lf-truck.moving { animation: lfTruckPulse 2s infinite; }
+    .lf-truck.overdue { outline: 4px solid #dc2626; outline-offset: 1px; }
+    @keyframes lfTruckPulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--truck) 60%, transparent); } 70% { box-shadow: 0 0 0 14px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+    .lf-card { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); width: max-content; max-width: 220px; background: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); overflow: hidden; border: 2px solid var(--truck); pointer-events: none; }
+    .lf-card.late { border-color: #dc2626; }
+    .lf-card-plate { background: var(--truck); color: #ffffff; font-size: 13px; font-weight: 800; padding: 2px 9px; text-align: center; white-space: nowrap; }
+    .lf-card-status { font-size: 12.5px; font-weight: 700; color: #1a202c; padding: 3px 9px 0; line-height: 1.3; }
+    .lf-card-detail { font-size: 12px; color: #4a5568; padding: 0 9px 4px; line-height: 1.3; }
+    .lf-card.late .lf-card-detail { color: #dc2626; font-weight: 700; }
+    .lf-card-status:last-child { padding-bottom: 4px; }
+    .lf-card.pos-above { top: auto; bottom: 44px; }
+    .lf-card.pos-right { top: 50%; left: 46px; transform: translateY(-50%); }
+    .lf-card.pos-left { top: 50%; left: auto; right: 46px; transform: translateY(-50%); }
+    .lf-card.compact .lf-card-status, .lf-card.compact .lf-card-detail { display: none; }
+    .lf-card.hidden { display: none; }
+    /* Popup */
+    #lfMap .leaflet-popup-content { font-size: 13px; }
+    .lf-pop-head { color: #ffffff; font-weight: 800; font-size: 16px; padding: 6px 10px; border-radius: 6px; margin-bottom: 6px; }
+    .lf-pop-status { font-size: 15px; font-weight: 700; color: #1a202c; }
+    .lf-pop-detail { font-size: 13px; color: #4a5568; margin-bottom: 6px; }
+    .lf-pop-detail.late { color: #dc2626; font-weight: 700; }
+    .lf-pop-grid { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; margin: 8px 0; }
+    .lf-pop-grid span { color: #6b7280; }
+    .lf-pop-link { font-size: 13px; font-weight: 700; }
+    /* Big screen (fullscreen) */
+    #liveFleet:fullscreen { background: var(--bg-primary); padding: 18px 22px; overflow: auto; border-radius: 0; }
+    #liveFleet:fullscreen .lf-panel, #liveFleet:fullscreen #lfMap { height: calc(100vh - 230px); }
+    #liveFleet:fullscreen .lf-summary { font-size: 18px; }
+    @media (max-width: 992px) {
+        .lf-panel { height: 360px; }
+        #lfMap { height: 420px; }
+        .lf-title-actions { margin-left: 0; }
+    }
+</style>
+<?php endif; ?>
+
 <div class="container-fluid px-0">
 
     <!-- ============================================ -->
@@ -831,6 +955,69 @@ echo view('templates/myheader.php');
             <a href="<?= current_url() ?>" class="btn-reset-header"><i class="bi bi-arrow-counterclockwise"></i> Reset</a>
         </form>
     </div>
+
+    <?php if (widget_visible('live_fleet_map')): ?>
+    <!-- ============================================ -->
+    <!-- LIVE FLEET TRACKING (Leaflet + OpenStreetMap) -->
+    <!-- ============================================ -->
+    <div class="card-container mb-3" id="liveFleet"
+        data-feed-url="<?= base_url('myadmindashboard/live-fleet') ?>"
+        data-dispatch-url="<?= base_url('fms-dispatch') ?>">
+        <div class="section-title lf-title">
+            <i class="bi bi-broadcast"></i> Live Fleet Tracking
+            <span class="badge-count primary" id="lfOnRoad">— on the road</span>
+            <span class="lf-live"><span class="lf-live-dot"></span>LIVE <span id="lfUpdated"></span></span>
+            <span class="lf-title-actions">
+                <button type="button" class="lf-btn" id="lfFitBtn" title="Zoom the map to show all selected trucks"><i class="bi bi-zoom-out"></i> Show all</button>
+                <button type="button" class="lf-btn" id="lfRefreshBtn" title="Refresh now"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                <button type="button" class="lf-btn primary" id="lfBigBtn" title="Fill the whole screen — good for a wall TV"><i class="bi bi-arrows-fullscreen"></i> Big screen</button>
+            </span>
+        </div>
+
+        <div class="lf-summary" id="lfSummary"><span class="spinner-border spinner-border-sm me-2"></span>Loading trucks…</div>
+
+        <div class="lf-chips" id="lfChips"></div>
+
+        <div class="row g-2">
+            <div class="col-xl-4 col-lg-5">
+                <div class="lf-panel">
+                    <div class="lf-search">
+                        <i class="bi bi-search"></i>
+                        <input type="text" id="lfSearch" placeholder="Find a truck: plate, driver, customer…" autocomplete="off">
+                    </div>
+                    <div class="lf-select-bar">
+                        <span id="lfSelCount">—</span>
+                        <span>
+                            <a href="#" id="lfSelectAll">Show all</a> ·
+                            <a href="#" id="lfSelectNone">Hide all</a>
+                        </span>
+                    </div>
+                    <div class="lf-list" id="lfList">
+                        <div class="lf-empty"><span class="spinner-border spinner-border-sm me-2"></span>Loading fleet…</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-xl-8 col-lg-7">
+                <div class="lf-map-wrap">
+                    <div id="lfMap"></div>
+                    <div class="lf-map-status" id="lfMapStatus" style="display:none;"></div>
+                    <div class="lf-focus-pill" id="lfFocusPill" style="display:none;"></div>
+                    <div class="lf-legend">
+                        <b>How to read:</b>
+                        <span><span class="lf-legend-line"></span> Road still to drive</span>
+                        <span><span class="lf-legend-line dotted"></span> Already driven</span>
+                        <span><i class="bi bi-flag-fill"></i> Delivery point</span>
+                        <span><i class="bi bi-caret-right-fill"></i> Direction</span>
+                    </div>
+                </div>
+                <div class="lf-note">
+                    <i class="bi bi-hand-index"></i> <b>Tip:</b> point at a truck to see only its route; click it to follow it. Click the truck circle for full details.
+                    Truck positions are estimated from the arrive/depart times recorded in Dispatch (no GPS). The map updates by itself every 30 seconds.
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <?php if (widget_visible('fleet_stats')): ?>
     <!-- ============================================ -->
@@ -1240,6 +1427,12 @@ echo view('templates/myheader.php');
 <!-- SCRIPTS -->
 <!-- ============================================ -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<?php if (widget_visible('live_fleet_map')): ?>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="<?= base_url('assets/js/apps/fms/fleet-tracking-core.js') . '?v=' . filemtime(FCPATH . 'assets/js/apps/fms/fleet-tracking-core.js') ?>"></script>
+<script src="<?= base_url('assets/js/apps/fms/dashboard/live-fleet.js') . '?v=' . filemtime(FCPATH . 'assets/js/apps/fms/dashboard/live-fleet.js') ?>"></script>
+<?php endif; ?>
 <script>
     <?php if (widget_visible('fuel_chart')): ?>
     // =============================================

@@ -546,6 +546,43 @@ echo view('templates/myheader.php');
     .journey-item .j-description { font-size: 14px; font-weight: 600; color: var(--gray-800); margin-bottom: 6px; }
     .journey-item .j-details { font-size: 11px; color: var(--gray-500); line-height: 1.7; }
     .journey-item .wp-actions { margin-top: 10px; display: flex; gap: 6px; }
+    .journey-item.wp-current { border-color: #f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,0.15); }
+    .journey-item .j-locate { font-size: 11px; cursor: pointer; color: var(--primary); text-decoration: none; }
+
+    /* Live tracking map (Leaflet + OpenStreetMap) */
+    .live-indicator { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: #dc2626; letter-spacing: 0.5px; margin-right: auto; }
+    .live-indicator #liveUpdatedAt { font-weight: 500; color: var(--gray-500); letter-spacing: 0; }
+    .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #dc2626; animation: livePulse 1.6s infinite; }
+    @keyframes livePulse { 0% { box-shadow: 0 0 0 0 rgba(220,38,38,0.6); } 70% { box-shadow: 0 0 0 8px rgba(220,38,38,0); } 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); } }
+    .live-summary { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 16px; background: var(--gray-50); border-radius: 8px; }
+    .live-summary-main { display: flex; align-items: center; gap: 12px; }
+    .live-summary-main > i { font-size: 26px; color: var(--primary); }
+    .live-status-text { font-size: 15px; font-weight: 700; color: var(--gray-800); }
+    .live-status-sub { font-size: 12px; color: var(--gray-500); }
+    .live-summary-stats { display: flex; gap: 22px; }
+    .live-summary-stats span { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--gray-500); }
+    .live-summary-stats strong { font-size: 15px; color: var(--gray-800); }
+    .live-progress-bar { height: 6px; background: var(--gray-200); border-radius: 999px; overflow: hidden; }
+    .live-progress-bar > div { height: 100%; width: 0; background: var(--success); transition: width 0.6s ease; }
+    .live-map-wrap { position: relative; border: 1px solid var(--gray-200); border-radius: 8px; overflow: hidden; }
+    #liveMap { height: 520px; width: 100%; z-index: 0; }
+    /* OSM credit is required by its license — kept, but small and faint */
+    #liveMap .leaflet-control-attribution { background: rgba(255,255,255,0.5); font-size: 9px; padding: 0 4px; }
+    #liveMap .leaflet-control-attribution a { color: #94a3b8; text-decoration: none; }
+    .live-map-status { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 500; background: rgba(17,24,39,0.85); color: #ffffff; font-size: 12px; padding: 5px 12px; border-radius: 999px; pointer-events: none; white-space: nowrap; }
+    .live-legend { position: absolute; left: 10px; bottom: 10px; z-index: 500; display: flex; gap: 10px; background: rgba(255,255,255,0.92); padding: 5px 10px; border-radius: 6px; font-size: 11px; color: var(--gray-700); box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
+    .live-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
+    .live-timeline-scroll { max-height: 520px; overflow-y: auto; }
+    .lt-pin { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid #ffffff; box-shadow: 0 2px 6px rgba(0,0,0,0.35); }
+    .lt-pin span { transform: rotate(45deg); color: #ffffff; font-weight: 700; font-size: 12px; }
+    .lt-truck { width: 40px; height: 40px; border-radius: 50%; background: #1d4ed8; border: 3px solid #ffffff; display: flex; align-items: center; justify-content: center; color: #ffffff; font-size: 19px; box-shadow: 0 0 0 0 rgba(29,78,216,0.5); animation: truckPulse 2s infinite; }
+    @keyframes truckPulse { 0% { box-shadow: 0 0 0 0 rgba(29,78,216,0.55); } 70% { box-shadow: 0 0 0 14px rgba(29,78,216,0); } 100% { box-shadow: 0 0 0 0 rgba(29,78,216,0); } }
+    .lt-popup-title { font-weight: 700; font-size: 13px; }
+    .lt-popup-meta { font-size: 11px; color: #6b7280; }
+    @media (max-width: 992px) {
+        #liveMap { height: 340px; }
+        .live-timeline-scroll { max-height: none; }
+    }
 
     .btn-toolbar {
         padding: 5px 12px;
@@ -806,6 +843,8 @@ echo view('templates/myheader.php');
     .insp-actions a { color: var(--danger); text-decoration: none; cursor: pointer; }
     .insp-actions a:hover { text-decoration: underline; }
 </style>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 
 <div class="me-dsp-msg"></div>
 <input type="hidden" id="__siteurl" data-mesiteurl="<?=site_url();?>" />
@@ -1634,26 +1673,62 @@ echo view('templates/myheader.php');
 <!-- WAYPOINT TRACKING MODAL -->
 <!-- ============================================ -->
 <div class="modal fade" id="waypointTrackingModal" tabindex="-1" data-bs-backdrop="static">
-    <div class="modal-dialog modal-lg">
+    <div class="modal-dialog modal-xl">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">
-                    <i class="bi bi-geo-alt me-2"></i>Waypoint Tracking - <span id="tracking_trip_code"></span>
+                    <i class="bi bi-geo-alt me-2"></i>Live Tracking - <span id="tracking_trip_code"></span>
                 </h5>
+                <span class="live-indicator ms-3" id="liveIndicator"><span class="live-dot"></span>LIVE <span id="liveUpdatedAt"></span></span>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <input type="hidden" id="tracking_trip_id">
                 <input type="hidden" id="tracking_waypoint_id">
 
-                <div class="card">
-                    <div class="card-header bg-light">
-                        <h6 class="mb-0"><i class="bi bi-list me-2"></i>Route Waypoints</h6>
+                <div class="live-summary mb-3">
+                    <div class="live-summary-main">
+                        <i class="bi bi-truck"></i>
+                        <div>
+                            <div class="live-status-text" id="live_status_text">Loading…</div>
+                            <div class="live-status-sub" id="live_status_sub"></div>
+                        </div>
                     </div>
-                    <div class="card-body">
-                        <div id="trackingWaypointsBody">
-                            <div class="text-center py-4">
-                                <div class="spinner-border text-primary" role="status"></div>
+                    <div class="live-summary-stats">
+                        <div><span>Progress</span><strong id="live_progress">—</strong></div>
+                        <div><span>Next Stop ETA</span><strong id="live_next_eta">—</strong></div>
+                        <div><span>Remaining</span><strong id="live_remaining">—</strong></div>
+                    </div>
+                </div>
+                <div class="live-progress-bar mb-3"><div id="live_progress_fill"></div></div>
+
+                <div class="row g-3">
+                    <div class="col-lg-7">
+                        <div class="live-map-wrap">
+                            <div id="liveMap"></div>
+                            <div class="live-map-status" id="liveMapStatus" style="display:none;"></div>
+                            <div class="live-legend">
+                                <span><i style="background:#94a3b8"></i>Pending</span>
+                                <span><i style="background:#0ea5e9"></i>Arrived</span>
+                                <span><i style="background:#f59e0b"></i>Departed</span>
+                                <span><i style="background:#10b981"></i>Completed</span>
+                            </div>
+                        </div>
+                        <div class="text-muted mt-1" style="font-size:11px;">
+                            <i class="bi bi-info-circle me-1"></i>Truck position is estimated from the recorded arrival/departure times and the road route (no GPS device).
+                        </div>
+                    </div>
+                    <div class="col-lg-5">
+                        <div class="card">
+                            <div class="card-header bg-light">
+                                <h6 class="mb-0"><i class="bi bi-list me-2"></i>Route Waypoints</h6>
+                            </div>
+                            <div class="card-body live-timeline-scroll">
+                                <div id="trackingWaypointsBody">
+                                    <div class="text-center py-4">
+                                        <div class="spinner-border text-primary" role="status"></div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1735,6 +1810,8 @@ echo view('templates/myheader.php');
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 var dispatchTable;
 var currentFilter = 'all';
@@ -1822,6 +1899,7 @@ $('#clearFilterBtn').on('click', function() {
 });
 </script>
 
+<script src="<?=base_url('assets/js/apps/fms/fleet-tracking-core.js') . '?v=' . filemtime(FCPATH . 'assets/js/apps/fms/fleet-tracking-core.js');?>"></script>
 <script src="<?=base_url('assets/js/apps/fms/dispatch/dispatch.js') . '?v=' . filemtime(FCPATH . 'assets/js/apps/fms/dispatch/dispatch.js');?>"></script>
 
 <?php

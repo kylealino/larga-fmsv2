@@ -1438,19 +1438,165 @@ function __Dispatch() {
     };
 
     // ==============================
+    // LIVE TRACKING MAP (Leaflet + OpenStreetMap)
+    // Position estimate, road routing and drawing styles come from
+    // FleetTrack (assets/js/apps/fms/fleet-tracking-core.js), shared with the
+    // dashboard's Live Fleet Tracking map.
+    // ==============================
+    var liveMap = null;
+    var liveLayer = null;
+    var liveMarkers = {};
+    var liveWaypoints = [];
+    var liveFitted = false;
+    var liveLastJson = null;      // last waypoint payload, so polls only redraw on change
+    var livePollTimer = null;
+    var liveTickTimer = null;
+    var LIVE_POLL_MS = 30000;     // re-fetch waypoint statuses (picks up other users' updates)
+    var LIVE_TICK_MS = 10000;     // re-position the in-transit truck
+
+    function liveSetMapStatus(text) {
+        if(text) $('#liveMapStatus').text(text).show(); else $('#liveMapStatus').hide();
+    }
+
+    this.__initLiveMap = function() {
+        if(liveMap) return;
+        if(typeof L === 'undefined') {
+            liveSetMapStatus('Map library failed to load — check your internet connection.');
+            return;
+        }
+        liveMap = L.map('liveMap').setView(FleetTrack.DEFAULT_CENTER, 11);
+        liveMap.attributionControl.setPrefix(false); // OSM credit must stay (ODbL / tile usage policy)
+        FleetTrack.osmTiles().addTo(liveMap);
+        liveLayer = L.layerGroup().addTo(liveMap);
+    };
+
+    this.__focusWaypoint = function(waypoint_id) {
+        var m = liveMarkers[waypoint_id];
+        if(m && liveMap) {
+            liveMap.setView(m.getLatLng(), Math.max(liveMap.getZoom(), 15));
+            m.openPopup();
+        } else {
+            toastr.info('This waypoint is not pinned on the map. Pin it in Trips → Manage Route.');
+        }
+    };
+
+    // Redraw markers, driven/remaining route and the truck from the latest statuses.
+    this.__renderLiveTracking = function(waypoints) {
+        var esc = FleetTrack.esc;
+        liveWaypoints = waypoints || [];
+        var progress = FleetTrack.computeProgress(liveWaypoints);
+        var total = liveWaypoints.length;
+        var text = FleetTrack.describe(liveWaypoints, progress);
+
+        $('#live_progress_fill').css('width', progress.percent + '%');
+        $('#live_progress').text(total ? progress.percent + '%' : '—');
+        $('#live_status_text').text(text.title);
+        $('#live_status_sub').text(text.sub);
+        $('#live_next_eta').text('—');
+        $('#live_remaining').text('—');
+
+        if(!liveMap) return;
+        liveLayer.clearLayers();
+        liveMarkers = {};
+
+        var plotted = FleetTrack.plottedOf(liveWaypoints);
+        if(!plotted.length) {
+            liveSetMapStatus(total ? 'No waypoints are pinned on the map — pin them in Trips → Manage Route.' : '');
+            liveMap.setView(FleetTrack.DEFAULT_CENTER, 11);
+            return;
+        }
+
+        $.each(plotted, function(_, row) {
+            var st = FleetTrack.status(row);
+            var label = (st === 'COMPLETED' || st === 'DEPARTED') ? '&#10003;' : esc(row.sequence);
+            var arr = FleetTrack.parseDate(row.actual_arrival), dep = FleetTrack.parseDate(row.actual_departure);
+            var popup = '<div class="lt-popup-title">#' + esc(row.sequence) + ' ' + esc(row.waypoint_name) + '</div>'
+                + '<div class="lt-popup-meta">' + esc(FleetTrack.TYPE_LABELS[row.waypoint_type] || row.waypoint_type) + ' · ' + esc(st.charAt(0) + st.slice(1).toLowerCase()) + '</div>'
+                + (row.address ? '<div class="lt-popup-meta">' + esc(row.address) + '</div>' : '')
+                + (arr ? '<div class="lt-popup-meta">Arrived: ' + esc(formatDateTime(row.actual_arrival)) + '</div>' : '')
+                + (dep ? '<div class="lt-popup-meta">Departed: ' + esc(formatDateTime(row.actual_departure)) + '</div>' : '')
+                + (!arr && row.expected_arrival ? '<div class="lt-popup-meta">Expected: ' + esc(formatDateTime(row.expected_arrival)) + '</div>' : '');
+            liveMarkers[row.waypoint_id] = L.marker([parseFloat(row.latitude), parseFloat(row.longitude)], {
+                icon: FleetTrack.pinIcon(label, FleetTrack.STATUS_COLORS[st] || FleetTrack.STATUS_COLORS.PENDING)
+            }).bindPopup(popup).addTo(liveLayer);
+        });
+
+        if(!liveFitted) {
+            var pts = plotted.map(function(r) { return [parseFloat(r.latitude), parseFloat(r.longitude)]; });
+            if(pts.length === 1) liveMap.setView(pts[0], 14); else liveMap.fitBounds(L.latLngBounds(pts).pad(0.15));
+            liveFitted = true;
+        }
+
+        var drawnFor = liveWaypoints;
+        FleetTrack.fetchRoute(plotted).then(function(route) {
+            if(drawnFor !== liveWaypoints) return; // superseded by a newer render
+            __Dispatch.__drawLiveRoute(plotted, route, progress);
+        });
+    };
+
+    this.__drawLiveRoute = function(plotted, route, progress) {
+        liveSetMapStatus(route.straight ? 'Road routing unavailable — showing straight-line path.' : '');
+        var result = FleetTrack.analyze(liveWaypoints, plotted, route, progress);
+        $.each(result.segments, function(_, seg) { FleetTrack.drawSegment(liveLayer, seg); });
+
+        if(result.truckPos) {
+            L.marker(result.truckPos, {
+                zIndexOffset: 2000,
+                icon: L.divIcon({ className: '', html: '<div class="lt-truck"><i class="bi bi-truck"></i></div>', iconSize: [40, 40], iconAnchor: [20, 20] })
+            }).bindTooltip(FleetTrack.esc(result.truckLabel), { direction: 'top', offset: [0, -20] }).addTo(liveLayer);
+        }
+
+        $('#live_remaining').text(progress.state === 'COMPLETED' ? '0 km' : (route.legs.length ? FleetTrack.formatDistance(result.remaining) : '—'));
+        $('#live_next_eta').text(progress.state === 'COMPLETED' ? 'Arrived' : (result.nextEta ? FleetTrack.formatTime(result.nextEta) : '—'));
+    };
+
+    this.__stopLiveTracking = function() {
+        clearInterval(livePollTimer);
+        clearInterval(liveTickTimer);
+        livePollTimer = liveTickTimer = null;
+    };
+
+    // ==============================
     // WAYPOINT TRACKING
     // ==============================
     this.__openWaypointTracking = function(trip_id, trip_code) {
         $('#tracking_trip_id').val(trip_id);
         $('#tracking_trip_code').text(trip_code);
-        
-        __Dispatch.__loadWaypointsTracking(trip_id);
-        
-        var modal = new bootstrap.Modal(document.getElementById('waypointTrackingModal'));
-        modal.show();
+        $('#trackingWaypointsBody').html('<div class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></div>');
+        $('#live_status_text').text('Loading…');
+        $('#live_status_sub, #liveUpdatedAt').text('');
+        $('#live_progress, #live_next_eta, #live_remaining').text('—');
+        $('#live_progress_fill').css('width', 0);
+        liveFitted = false;
+        liveWaypoints = [];
+        liveLastJson = null;
+        if(liveLayer) liveLayer.clearLayers();
+
+        var modalEl = document.getElementById('waypointTrackingModal');
+        // Leaflet needs a visible container to size itself, so build the map once the modal is shown
+        modalEl.addEventListener('shown.bs.modal', function() {
+            __Dispatch.__initLiveMap();
+            if(liveMap) liveMap.invalidateSize();
+            __Dispatch.__loadWaypointsTracking(trip_id);
+
+            __Dispatch.__stopLiveTracking();
+            livePollTimer = setInterval(function() {
+                __Dispatch.__loadWaypointsTracking($('#tracking_trip_id').val(), true);
+            }, LIVE_POLL_MS);
+            liveTickTimer = setInterval(function() {
+                if(liveWaypoints.length && FleetTrack.computeProgress(liveWaypoints).state === 'IN_TRANSIT') {
+                    __Dispatch.__renderLiveTracking(liveWaypoints);
+                }
+            }, LIVE_TICK_MS);
+        }, { once: true });
+        modalEl.addEventListener('hidden.bs.modal', function() {
+            __Dispatch.__stopLiveTracking();
+        }, { once: true });
+
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
     };
 
-    this.__loadWaypointsTracking = function(trip_id) {
+    this.__loadWaypointsTracking = function(trip_id, silent) {
         var mparam = {
             trip_id: trip_id,
             meaction: 'GET_WAYPOINTS_TRACKING'
@@ -1462,7 +1608,13 @@ function __Dispatch() {
             data: mparam,
             dataType: 'json',
             success: function(data) {
-                console.log('Waypoints tracking data:', data);
+                $('#liveUpdatedAt').text('· updated ' + FleetTrack.formatTime(new Date()));
+                var json = JSON.stringify(data || []);
+                if(silent && json === liveLastJson) return; // nothing changed since the last poll
+                if(silent && liveLastJson !== null) toastr.info('Tracking updated', '', { timeOut: 2000 });
+                liveLastJson = json;
+
+                var progress = FleetTrack.computeProgress(data || []);
                 var html = '';
                 if(data && data.length > 0) {
                     html += '<div class="journey-timeline">';
@@ -1507,13 +1659,21 @@ function __Dispatch() {
                             itemCls = 'wp-completed';
                         }
 
+                        var isCurrent = progress.state !== 'COMPLETED' &&
+                            (progress.state === 'IN_TRANSIT' ? index === progress.nextIdx : index === progress.currentIdx);
+                        if(isCurrent) itemCls += ' wp-current';
+
                         html += '<div class="journey-item ' + itemCls + '">';
                         html += '<div class="wp-dot">' + row.sequence + '</div>';
                         html += '<div class="j-header">';
                         html += '<span class="j-type">' + typeDisplay + '</span>';
                         html += statusBadge;
                         html += '</div>';
-                        html += '<div class="j-description">' + (row.waypoint_name || '—') + '</div>';
+                        html += '<div class="j-description">' + (row.waypoint_name || '—');
+                        html += FleetTrack.hasCoords(row)
+                            ? ' <a class="j-locate" onclick="__Dispatch.__focusWaypoint(' + row.waypoint_id + ')"><i class="bi bi-geo-alt"></i> Show on map</a>'
+                            : ' <span class="j-locate text-muted" style="cursor:default;">(not pinned)</span>';
+                        html += '</div>';
                         html += '<div class="j-details">';
                         html += 'Expected Arrival: ' + expectedArrival + ' &nbsp;|&nbsp; Expected Departure: ' + expectedDeparture + '<br>';
                         html += 'Actual Arrival: ' + actualArrival + ' &nbsp;|&nbsp; Actual Departure: ' + actualDeparture;
@@ -1531,8 +1691,10 @@ function __Dispatch() {
                            '<p>This trip has no route waypoints defined.</p></div>';
                 }
                 $('#trackingWaypointsBody').html(html);
+                __Dispatch.__renderLiveTracking(data || []);
             },
             error: function(xhr, status, error) {
+                if(silent) return; // a failed background poll just waits for the next one
                 toastr.error("Error loading waypoints: " + error);
                 console.error('Error loading waypoints:', error);
                 $('#trackingWaypointsBody').html(
@@ -1613,6 +1775,15 @@ function __Dispatch() {
                         // return, and (on the last waypoint) freeing the truck/driver/helper —
                         // none of which live-update elsewhere on the page (stat cards, the main
                         // table row), so reload to reflect it everywhere instead of just here.
+                        // Refresh the map right away, and reopen live tracking after the reload.
+                        var trip_id = $('#tracking_trip_id').val();
+                        __Dispatch.__loadWaypointsTracking(trip_id);
+                        try {
+                            sessionStorage.setItem('dispatch_reopen_tracking', JSON.stringify({
+                                trip_id: trip_id,
+                                trip_code: $('#tracking_trip_code').text()
+                            }));
+                        } catch(e) { /* storage blocked: modal just won't reopen */ }
                         setTimeout(function() { location.reload(); }, 1200);
                     } else {
                         var trip_id = $('#tracking_trip_id').val();
@@ -1682,6 +1853,15 @@ function formatDateTime(datetime) {
 
 $(document).ready(function() {
     console.log('Dispatch ready');
+
+    // Recording an arrival reloads the page; bring the live tracking view back for that trip.
+    try {
+        var reopen = JSON.parse(sessionStorage.getItem('dispatch_reopen_tracking') || 'null');
+        sessionStorage.removeItem('dispatch_reopen_tracking');
+        if(reopen && reopen.trip_id) {
+            __Dispatch.__openWaypointTracking(reopen.trip_id, reopen.trip_code);
+        }
+    } catch(e) { /* ignore */ }
     
         // Clear iframe when PDF modal closes
     $('#pdfModal').on('hidden.bs.modal', function () {

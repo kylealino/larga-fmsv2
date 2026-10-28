@@ -335,4 +335,60 @@ class FMS_Dashboard_Model extends Model
             'expiring_documents'   => (int) $expiringDocs,
         ];
     }
+
+    // ==============================
+    // LIVE FLEET — every trip whose unit is out on the road right now
+    // (DISPATCHED / IN_TRANSIT / DELIVERED), with its unit, crew and route
+    // waypoints. Not period-filtered: it's a current-state view. The browser
+    // derives each truck's position from the waypoint arrival/departure times.
+    // ==============================
+    public function getLiveFleet()
+    {
+        $trips = $this->db->query("
+            SELECT t.trip_id, t.trip_code, t.trip_status, t.priority, t.service_type,
+                   t.origin, t.destination, t.cargo_description,
+                   c.customer_name,
+                   a.vehicle_type, a.truck_plate, a.tractor_plate, a.chassis_plate, a.vendor_name,
+                   a.driver_name, a.helper_name,
+                   d.dispatch_code, d.truck AS dispatch_unit
+            FROM tbl_trips t
+            LEFT JOIN tbl_customers c ON c.customer_id = t.customer_id
+            LEFT JOIN tbl_trip_assignments a ON a.assignment_id = (
+                SELECT MAX(a2.assignment_id) FROM tbl_trip_assignments a2 WHERE a2.trip_id = t.trip_id
+            )
+            LEFT JOIN tbl_dispatch d ON d.dispatch_id = (
+                SELECT MAX(d2.dispatch_id) FROM tbl_dispatch d2 WHERE d2.trip_id = t.trip_id
+            )
+            WHERE t.trip_status IN ('DISPATCHED', 'IN_TRANSIT', 'DELIVERED')
+            ORDER BY t.trip_code ASC
+        ")->getResultArray();
+
+        if (!$trips) {
+            return [];
+        }
+
+        $waypointsByTrip = [];
+        $rows = $this->db->query("
+            SELECT waypoint_id, trip_id, sequence, waypoint_type, waypoint_name, address, city,
+                   latitude, longitude, expected_arrival, expected_departure,
+                   actual_arrival, actual_departure, waypoint_status
+            FROM tbl_trip_waypoints
+            WHERE trip_id IN ?
+            ORDER BY trip_id, sequence ASC
+        ", [array_column($trips, 'trip_id')])->getResultArray();
+        foreach ($rows as $row) {
+            $waypointsByTrip[$row['trip_id']][] = $row;
+        }
+
+        foreach ($trips as &$trip) {
+            // Display plate: the dispatch's unit string already reads "TRC-001 + CHS-001" / vendor units
+            $trip['unit_label'] = $trip['dispatch_unit']
+                ?: ($trip['truck_plate'] ?: trim(($trip['tractor_plate'] ?? '') . ($trip['chassis_plate'] ? ' + ' . $trip['chassis_plate'] : '')))
+                ?: $trip['trip_code'];
+            $trip['waypoints'] = $waypointsByTrip[$trip['trip_id']] ?? [];
+        }
+        unset($trip);
+
+        return $trips;
+    }
 }
